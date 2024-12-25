@@ -95,17 +95,17 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 		Pid           int64
 		State         string
 		BlockedByPids []int64
-		WaitEventType string
-		WaitEvent     string
+		WaitEventType sql.NullString
+		WaitEvent     sql.NullString
 		Query         string
 		BackendType   string
 
 		Database            string
-		Username            string
+		Username            sql.NullString
 		Application         string
 		ClientAddress       netip.Addr
 		ClientHostname      sql.NullString
-		ClientPort          uint16
+		ClientPort          int
 		CurrentDatabaseTime time.Time
 		BackendStart        time.Time
 		TransactionStart    time.Time
@@ -153,12 +153,12 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 		processes[row.Pid] = &BackendProcess{
 			Pid:                 row.Pid,
 			State:               row.State,
-			WaitEventType:       row.WaitEventType,
-			WaitEvent:           row.WaitEvent,
+			WaitEventType:       row.WaitEventType.String,
+			WaitEvent:           row.WaitEvent.String,
 			BackendType:         row.BackendType,
 			Query:               row.Query,
 			Database:            row.Database,
-			Username:            row.Username,
+			Username:            row.Username.String,
 			Application:         row.Application,
 			ClientAddress:       row.ClientAddress,
 			ClientHostname:      row.ClientHostname.String,

@@ -29,12 +29,13 @@ type BackendProcess struct {
 	// super-user
 	Query string
 
-	Database            string
-	Username            string
-	Application         string
-	ClientAddress       netip.Addr
-	ClientHostname      string
-	ClientPort          uint16
+	Database       string
+	Username       string
+	Application    string
+	ClientAddress  netip.Addr
+	ClientHostname string
+	// uint16, or -1 if UNIX socket
+	ClientPort          int
 	CurrentDatabaseTime time.Time
 	BackendStart        time.Time
 	TransactionStart    time.Time
