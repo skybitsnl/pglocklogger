@@ -41,6 +41,7 @@ type BackendProcess struct {
 	TransactionStart    time.Time
 	QueryStart          time.Time
 	StateChange         time.Time
+	BackendXid          string
 
 	// Other backend processes this process is blocked on.
 	BlockedBy []*BackendProcess
@@ -52,16 +53,29 @@ type BackendProcess struct {
 
 type BackendProcessLocks struct {
 	// https://www.postgresql.org/docs/current/monitoring-stats.html#WAIT-EVENT-LOCK-TABLE
-	Type         string
-	Granted      bool
-	Mode         string
-	WaitStart    time.Time
+	Type      string
+	Granted   bool
+	Mode      string
+	WaitStart time.Time
+
+	// The following fields have a zero value if unset, or if the zero value would
+	// be valid as well, the field is a ptr that is nil if unset.
+
 	RelationOid  string
 	RelationName string
 	// r = ordinary table, i = index, S = sequence, t = TOAST table,
 	// v = view, m = materialized view, c = composite type, f = foreign table,
 	// p = partitioned table, I = partitioned index
 	RelationKind string
+
+	Page               *int
+	Tuple              *int
+	VirtualXid         string
+	TransactionId      string
+	ClassId            string
+	ObjId              string
+	ObjSubId           *int
+	VirtualTransaction string
 }
 
 // For convenience, this returns true if the query itself isn't
@@ -72,26 +86,127 @@ func (bp BackendProcess) IsBlocked() bool {
 
 func (p BackendProcess) String() string {
 	sb := &strings.Builder{}
-	fmt.Fprintf(sb, "Process %d (%s/%s) is %s for %s (%s:%s)\n",
-		p.Pid, p.Application, p.BackendType, p.State,
+	fmt.Fprintf(sb, "Process %d (%s %q) is %s for %s (%s:%s)\n",
+		p.Pid, p.BackendType, p.Application, p.State,
 		p.CurrentDatabaseTime.Sub(p.StateChange),
 		p.WaitEventType, p.WaitEvent)
+	if p.Query == "" {
+		fmt.Fprintf(sb, "  (no query)\n")
+	} else {
+		query := strings.ReplaceAll(strings.ReplaceAll(p.Query, "\r", ""), "\n", " ")
+		if len(query) > 40 {
+			query = query[0:40]
+		}
+		if p.State == "active" {
+			fmt.Fprintf(sb, "  running for %s: %s\n",
+				p.CurrentDatabaseTime.Sub(p.QueryStart),
+				query,
+			)
+		} else {
+			fmt.Fprintf(sb, "  last query started %s ago: %s\n",
+				p.CurrentDatabaseTime.Sub(p.QueryStart),
+				query,
+			)
+		}
+	}
 	if len(p.Locks) == 0 {
 		fmt.Fprintf(sb, "  (holding no locks)\n")
 	}
+
+	const skipHoldingLockOnItself = true
+
 	for _, lock := range p.Locks {
+		var on []string
+
+		if lock.RelationOid != "" {
+			switch lock.RelationKind {
+			case "r":
+				on = append(on, fmt.Sprintf("table %s", lock.RelationName))
+			// TODO: if there's a lock on a table plus its indices, write "table X and 3 of its indices"
+			case "i":
+				on = append(on, fmt.Sprintf("index %s", lock.RelationName))
+			case "S":
+				on = append(on, fmt.Sprintf("sequence %s", lock.RelationName))
+			case "t":
+				on = append(on, fmt.Sprintf("TOAST table %s", lock.RelationName))
+			case "v":
+				on = append(on, fmt.Sprintf("view %s", lock.RelationName))
+			case "m":
+				on = append(on, fmt.Sprintf("materialized view %s", lock.RelationName))
+			case "c":
+				on = append(on, fmt.Sprintf("composite type %s", lock.RelationName))
+			case "f":
+				on = append(on, fmt.Sprintf("foreign table %s", lock.RelationName))
+			case "p":
+				on = append(on, fmt.Sprintf("partitioned table %s", lock.RelationName))
+			case "I":
+				on = append(on, fmt.Sprintf("partitioned index %s", lock.RelationName))
+			case "":
+				if lock.RelationName == "" {
+					on = append(on, fmt.Sprintf("unknown OID %s", lock.RelationOid))
+				} else {
+					on = append(on, fmt.Sprintf("unknown OID %s (%s)", lock.RelationName, lock.RelationOid))
+				}
+			default:
+				if lock.RelationName == "" {
+					on = append(on, fmt.Sprintf("[%s] %s", lock.RelationKind, lock.RelationOid))
+				} else {
+					on = append(on, fmt.Sprintf("[%s] %s (%s)", lock.RelationKind, lock.RelationName, lock.RelationOid))
+				}
+			}
+		}
+
+		if lock.Page != nil {
+			on = append(on, fmt.Sprintf("page %d", *lock.Page))
+		}
+		if lock.Tuple != nil {
+			on = append(on, fmt.Sprintf("tuple %d", *lock.Tuple))
+		}
+		if lock.VirtualXid != "" {
+			if lock.VirtualXid == lock.VirtualTransaction {
+				if lock.Granted && skipHoldingLockOnItself {
+					continue
+				}
+				on = append(on, fmt.Sprintf("itself (virtual XID %s)", lock.VirtualXid))
+			} else {
+				on = append(on, fmt.Sprintf("virtual XID %s", lock.VirtualXid))
+			}
+		}
+		if lock.TransactionId != "" {
+			if lock.TransactionId == p.BackendXid {
+				on = append(on, fmt.Sprintf("itself (XID %s)", p.BackendXid))
+				if lock.Granted && skipHoldingLockOnItself {
+					continue
+				}
+			} else {
+				on = append(on, fmt.Sprintf("transaction XID %s", lock.TransactionId))
+			}
+		}
+		if lock.ClassId != "" {
+			on = append(on, fmt.Sprintf("class id %s", lock.ClassId))
+		}
+		if lock.ObjId != "" {
+			on = append(on, fmt.Sprintf("object id %s", lock.ObjId))
+		}
+		if lock.ObjSubId != nil {
+			on = append(on, fmt.Sprintf("object sub-id %d", *lock.ObjSubId))
+		}
+
+		if len(on) == 0 {
+			on = append(on, "unknown target")
+		}
+
 		state := "waiting for"
 		if lock.Granted {
 			state = "holding"
 		}
-		since := ""
+		fmt.Fprintf(sb, "  %s %s/%s lock", state, lock.Type, lock.Mode)
+
+		fmt.Fprintf(sb, " on %s", strings.Join(on, ", "))
 		if !lock.WaitStart.IsZero() {
-			since = fmt.Sprintf(" (since %s)", p.CurrentDatabaseTime.Sub(lock.WaitStart))
+			fmt.Fprintf(sb, " (since %s)", p.CurrentDatabaseTime.Sub(lock.WaitStart))
 		}
-		fmt.Fprintf(sb, "  %s %s/%s lock on %s/%s%s\n",
-			state, lock.Type, lock.Mode, lock.RelationKind, lock.RelationName,
-			since,
-		)
+		fmt.Fprintf(sb, "\n")
 	}
 
 	if len(p.BlockedBy) == 0 {

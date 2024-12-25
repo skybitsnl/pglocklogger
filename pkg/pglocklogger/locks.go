@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"time"
@@ -47,6 +48,7 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 			query, backend_type, datname, usename, application_name,
 			client_addr, client_hostname, client_port, current_timestamp,
 			backend_start, xact_start, query_start, state_change,
+			backend_xid,
 			(
 				SELECT coalesce(
 					jsonb_agg(
@@ -71,11 +73,22 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 
 	type ActivityLockL struct {
 		// https://www.postgresql.org/docs/current/monitoring-stats.html#WAIT-EVENT-LOCK-TABLE
-		Type        string    `json:"locktype"`
-		Mode        string    `json:"mode"`
-		RelationOid string    `json:"relation"`
-		Granted     bool      `json:"granted"`
-		WaitStart   time.Time `json:"waitstart"`
+		Type      string    `json:"locktype"`
+		Mode      string    `json:"mode"`
+		Granted   bool      `json:"granted"`
+		WaitStart time.Time `json:"waitstart"`
+
+		// Where does the lock point to?
+		// https://www.postgresql.org/docs/current/view-pg-locks.html
+		RelationOid        *string `json:"relation,omitempty"`
+		Page               *int    `json:"page,omitempty"`
+		Tuple              *int    `json:"tuple,omitempty"`
+		VirtualXid         *string `json:"virtualxid,omitempty"`
+		TransactionId      *string `json:"transactionid,omitempty"`
+		ClassId            *string `json:"classid,omitempty"`
+		ObjId              *string `json:"objid,omitempty"`
+		ObjSubId           *int    `json:"objsubid,omitempty"`
+		VirtualTransaction *string `json:"virtualtransaction,omitempty"`
 	}
 
 	type ActivityLockR struct {
@@ -111,6 +124,7 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 		TransactionStart    time.Time
 		QueryStart          time.Time
 		StateChange         time.Time
+		BackendXid          sql.NullString
 
 		LockBytes []byte
 		Locks     []ActivityLock
@@ -133,7 +147,7 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 			&row.WaitEvent, &row.Query, &row.BackendType, &row.Database,
 			&row.Username, &row.Application, &row.ClientAddress, &row.ClientHostname,
 			&row.ClientPort, &row.CurrentDatabaseTime, &row.BackendStart, &row.TransactionStart,
-			&row.QueryStart, &row.StateChange, &row.LockBytes); err != nil {
+			&row.QueryStart, &row.StateChange, &row.BackendXid, &row.LockBytes); err != nil {
 			return nil, err
 		}
 
@@ -168,6 +182,7 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 			TransactionStart:    row.TransactionStart,
 			QueryStart:          row.QueryStart,
 			StateChange:         row.StateChange,
+			BackendXid:          row.BackendXid.String,
 		}
 	}
 
@@ -178,21 +193,32 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 		}
 
 		for _, lock := range activity.Locks {
-			process.Locks = append(process.Locks, BackendProcessLocks{
-				Type:         lock.Lock.Type,
-				Granted:      lock.Lock.Granted,
-				Mode:         lock.Lock.Mode,
-				WaitStart:    lock.Lock.WaitStart,
-				RelationOid:  lock.Lock.RelationOid,
-				RelationName: lock.Rel.Name,
-				RelationKind: lock.Rel.Kind,
-			})
+			pLock := BackendProcessLocks{
+				Type:      lock.Lock.Type,
+				Granted:   lock.Lock.Granted,
+				Mode:      lock.Lock.Mode,
+				WaitStart: lock.Lock.WaitStart,
+
+				RelationOid:        unref(lock.Lock.RelationOid),
+				RelationName:       lock.Rel.Name,
+				RelationKind:       lock.Rel.Kind,
+				Page:               lock.Lock.Page,
+				Tuple:              lock.Lock.Tuple,
+				VirtualXid:         unref(lock.Lock.VirtualXid),
+				TransactionId:      unref(lock.Lock.TransactionId),
+				ClassId:            unref(lock.Lock.ClassId),
+				ObjId:              unref(lock.Lock.ObjId),
+				ObjSubId:           lock.Lock.ObjSubId,
+				VirtualTransaction: unref(lock.Lock.VirtualTransaction),
+			}
+
+			process.Locks = append(process.Locks, pLock)
 		}
 	}
 
 	var res []BackendProcess
 	for _, process := range processes {
-		if process.WaitEventType != "Lock" {
+		if !process.IsBlocked() {
 			continue
 		}
 
@@ -200,4 +226,13 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 	}
 
 	return res, nil
+}
+
+func unref[T any](ptr *T) T {
+	if ptr == nil {
+		var zero T
+		return zero
+	} else {
+		return *ptr
+	}
 }
