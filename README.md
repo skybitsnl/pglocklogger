@@ -21,9 +21,9 @@ are trying to do.
 
 There's three easy ways to run the tool:
 
-1. (TODO:) Use the Docker image using
+1. Use the Docker image using
    `docker run sjorsgielen/pglocklogger:latest -dsn ...`. Or, build it yourself
-   using `./build-images.sh`.
+   using `goreleaser release --snapshot --clean`.
 2. Run the tool directly from the repo using `go run ./cmd -dsn ...` (requires
    a Go toolchain)
 3. Build the tool using `go build -o pglocklogger ./cmd` (requires a Go

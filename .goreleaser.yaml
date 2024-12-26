@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+builds:
+  - main: ./cmd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+dockers:
+  - image_templates:
+    - 'sjorsgielen/pglocklogger:latest-amd64'
+    - 'sjorsgielen/pglocklogger:{{ .Tag }}-amd64'
+    dockerfile: 'Dockerfile'
+    use: buildx
+    build_flag_templates:
+    - "--pull"
+    - "--platform=linux/amd64"
+  - image_templates:
+    - 'sjorsgielen/pglocklogger:latest-arm64'
+    - 'sjorsgielen/pglocklogger:{{ .Tag }}-arm64'
+    dockerfile: 'Dockerfile'
+    use: buildx
+    build_flag_templates:
+    - "--pull"
+    - "--platform=linux/arm64"
+    goarch: arm64
+
+docker_manifests:
+  - name_template: 'sjorsgielen/pglocklogger:latest'
+    image_templates:
+    - 'sjorsgielen/pglocklogger:latest-amd64'
+    - 'sjorsgielen/pglocklogger:latest-arm64'
+  - name_template: 'sjorsgielen/pglocklogger:{{ .Tag }}'
+    image_templates:
+    - 'sjorsgielen/pglocklogger:{{ .Tag }}-amd64'
+    - 'sjorsgielen/pglocklogger:{{ .Tag }}-arm64'
+
+archives:
+  - format: tar.gz
+    # this name template makes the OS and Arch compatible with the results of `uname`.
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    # use zip for windows archives
+    format_overrides:
+      - goos: windows
+        format: zip
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
