@@ -41,7 +41,7 @@ type BackendProcess struct {
 	TransactionStart    time.Time
 	QueryStart          time.Time
 	StateChange         time.Time
-	BackendXid          string
+	BackendXid          uint32
 
 	// Other backend processes this process is blocked on.
 	BlockedBy []*BackendProcess
@@ -61,20 +61,20 @@ type BackendProcessLocks struct {
 	// The following fields have a zero value if unset, or if the zero value would
 	// be valid as well, the field is a ptr that is nil if unset.
 
-	RelationOid  string
+	RelationOid  uint32
 	RelationName string
 	// r = ordinary table, i = index, S = sequence, t = TOAST table,
 	// v = view, m = materialized view, c = composite type, f = foreign table,
 	// p = partitioned table, I = partitioned index
 	RelationKind string
 
-	Page               *int
-	Tuple              *int
+	Page               *int32
+	Tuple              *int16
 	VirtualXid         string
-	TransactionId      string
-	ClassId            string
-	ObjId              string
-	ObjSubId           *int
+	TransactionId      uint32
+	ClassId            uint32
+	ObjId              *uint32
+	ObjSubId           *int16
 	VirtualTransaction string
 }
 
@@ -118,7 +118,7 @@ func (p BackendProcess) String() string {
 	for _, lock := range p.Locks {
 		var on []string
 
-		if lock.RelationOid != "" {
+		if lock.RelationOid != 0 {
 			switch lock.RelationKind {
 			case "r":
 				on = append(on, fmt.Sprintf("table %s", lock.RelationName))
@@ -143,15 +143,15 @@ func (p BackendProcess) String() string {
 				on = append(on, fmt.Sprintf("partitioned index %s", lock.RelationName))
 			case "":
 				if lock.RelationName == "" {
-					on = append(on, fmt.Sprintf("unknown OID %s", lock.RelationOid))
+					on = append(on, fmt.Sprintf("unknown OID %d", lock.RelationOid))
 				} else {
-					on = append(on, fmt.Sprintf("unknown OID %s (%s)", lock.RelationName, lock.RelationOid))
+					on = append(on, fmt.Sprintf("unknown OID %s (%d)", lock.RelationName, lock.RelationOid))
 				}
 			default:
 				if lock.RelationName == "" {
-					on = append(on, fmt.Sprintf("[%s] %s", lock.RelationKind, lock.RelationOid))
+					on = append(on, fmt.Sprintf("[%s] %d", lock.RelationKind, lock.RelationOid))
 				} else {
-					on = append(on, fmt.Sprintf("[%s] %s (%s)", lock.RelationKind, lock.RelationName, lock.RelationOid))
+					on = append(on, fmt.Sprintf("[%s] %s (%d)", lock.RelationKind, lock.RelationName, lock.RelationOid))
 				}
 			}
 		}
@@ -172,21 +172,21 @@ func (p BackendProcess) String() string {
 				on = append(on, fmt.Sprintf("virtual XID %s", lock.VirtualXid))
 			}
 		}
-		if lock.TransactionId != "" {
+		if lock.TransactionId != 0 {
 			if lock.TransactionId == p.BackendXid {
-				on = append(on, fmt.Sprintf("itself (XID %s)", p.BackendXid))
+				on = append(on, fmt.Sprintf("itself (XID %d)", p.BackendXid))
 				if lock.Granted && skipHoldingLockOnItself {
 					continue
 				}
 			} else {
-				on = append(on, fmt.Sprintf("transaction XID %s", lock.TransactionId))
+				on = append(on, fmt.Sprintf("transaction XID %d", lock.TransactionId))
 			}
 		}
-		if lock.ClassId != "" {
-			on = append(on, fmt.Sprintf("class id %s", lock.ClassId))
+		if lock.ClassId != 0 {
+			on = append(on, fmt.Sprintf("class id %d", lock.ClassId))
 		}
-		if lock.ObjId != "" {
-			on = append(on, fmt.Sprintf("object id %s", lock.ObjId))
+		if lock.ObjId != nil {
+			on = append(on, fmt.Sprintf("object id %d", *lock.ObjId))
 		}
 		if lock.ObjSubId != nil {
 			on = append(on, fmt.Sprintf("object sub-id %d", *lock.ObjSubId))

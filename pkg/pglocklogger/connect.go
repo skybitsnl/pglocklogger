@@ -32,11 +32,11 @@ func New(options PgLockLoggerOptions) *PgLockLogger {
 	}
 }
 
-func (pg *PgLockLogger) Connect(ctx context.Context) error {
+func (pg *PgLockLogger) Tx(ctx context.Context) (pgx.Tx, error) {
 	if pg.conn != nil {
 		if isReplica, err := pg.connectedToReplica(ctx); err != nil {
 			pg.Close(context.WithoutCancel(ctx))
-			return err
+			return nil, err
 		} else if isReplica {
 			slog.InfoContext(ctx, "connected to replica - reconnecting to master")
 			pg.Close(context.WithoutCancel(ctx))
@@ -46,13 +46,13 @@ func (pg *PgLockLogger) Connect(ctx context.Context) error {
 	for pg.conn == nil {
 		conn, err := pgx.Connect(ctx, pg.options.DSN)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		pg.conn = conn
 
 		if isReplica, err := pg.connectedToReplica(ctx); err != nil {
 			pg.Close(context.WithoutCancel(ctx))
-			return err
+			return nil, err
 		} else if isReplica {
 			slog.WarnContext(ctx, "connected to replica - reconnecting to master")
 			pg.Close(context.WithoutCancel(ctx))
@@ -60,7 +60,10 @@ func (pg *PgLockLogger) Connect(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	return pg.conn.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
 }
 
 func (pg *PgLockLogger) Close(ctx context.Context) error {

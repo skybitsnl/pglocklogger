@@ -1,0 +1,8 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "queries.sql"
+    gen:
+      go:
+        out: "gendb"
+        sql_package: "pgx/v5"

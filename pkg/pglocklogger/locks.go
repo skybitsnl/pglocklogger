@@ -2,12 +2,12 @@ package pglocklogger
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/netip"
-	"time"
+	"slices"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/skybitsnl/pglocklogger/pkg/pglocklogger/gendb"
 )
 
 // Retrieve blocked processes from PostgreSQL.
@@ -17,199 +17,88 @@ import (
 // rows, we join information from pg_locks and other pg_stat_activity rows to get
 // more information about what the process is waiting for, and why.
 func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProcess, error) {
-	if err := pg.Connect(ctx); err != nil {
-		return nil, err
-	}
-
-	// Start with all activity
-	query := `
-		SELECT
-			activity.*,
-			pg_blocking_pids(activity.pid) as blocked_by
-		FROM pg_stat_activity activity
-	`
-
-	// In a recursive query, request all activity blocked on a lock,
-	// plus the PIDs they are blocked on
-	query = `
-		WITH RECURSIVE activities AS (
-			` + query + `
-			WHERE wait_event_type='Lock'
-			UNION
-			` + query + `, activities
-			WHERE activity.pid=any(activities.blocked_by)
-		)`
-
-	// Enrich the results with locks held and awaiting by all activities
-	// returned
-	query = query + `
-		SELECT
-			pid, state, blocked_by, wait_event_type, wait_event,
-			query, backend_type, datname, usename, application_name,
-			client_addr, client_hostname, client_port, current_timestamp,
-			backend_start, xact_start, query_start, state_change,
-			backend_xid,
-			(
-				SELECT coalesce(
-					jsonb_agg(
-						jsonb_build_object(
-							'lock',
-							row_to_json(locks),
-							'rel',
-							jsonb_build_object(
-								'name', rel.relname,
-								'kind', rel.relkind
-							)
-						)
-					),
-					'[]'
-				)
-				FROM pg_locks locks
-				LEFT JOIN pg_class rel ON rel.oid=locks.relation
-				WHERE locks.pid=activities.pid
-			) AS locks
-		FROM activities
-		`
-
-	type ActivityLockL struct {
-		// https://www.postgresql.org/docs/current/monitoring-stats.html#WAIT-EVENT-LOCK-TABLE
-		Type      string    `json:"locktype"`
-		Mode      string    `json:"mode"`
-		Granted   bool      `json:"granted"`
-		WaitStart time.Time `json:"waitstart"`
-
-		// Where does the lock point to?
-		// https://www.postgresql.org/docs/current/view-pg-locks.html
-		RelationOid        *string `json:"relation,omitempty"`
-		Page               *int    `json:"page,omitempty"`
-		Tuple              *int    `json:"tuple,omitempty"`
-		VirtualXid         *string `json:"virtualxid,omitempty"`
-		TransactionId      *string `json:"transactionid,omitempty"`
-		ClassId            *string `json:"classid,omitempty"`
-		ObjId              *string `json:"objid,omitempty"`
-		ObjSubId           *int    `json:"objsubid,omitempty"`
-		VirtualTransaction *string `json:"virtualtransaction,omitempty"`
-	}
-
-	type ActivityLockR struct {
-		Name string `json:"name"`
-		// r = ordinary table, i = index, S = sequence, t = TOAST table,
-		// v = view, m = materialized view, c = composite type, f = foreign table,
-		// p = partitioned table, I = partitioned index
-		Kind string `json:"kind"`
-	}
-
-	type ActivityLock struct {
-		Lock ActivityLockL `json:"lock"`
-		Rel  ActivityLockR `json:"rel"`
-	}
-
-	type ActivityRow struct {
-		Pid           int64
-		State         string
-		BlockedByPids []int64
-		WaitEventType sql.NullString
-		WaitEvent     sql.NullString
-		Query         string
-		BackendType   string
-
-		Database            string
-		Username            sql.NullString
-		Application         string
-		ClientAddress       netip.Addr
-		ClientHostname      sql.NullString
-		ClientPort          int
-		CurrentDatabaseTime time.Time
-		BackendStart        time.Time
-		TransactionStart    time.Time
-		QueryStart          time.Time
-		StateChange         time.Time
-		BackendXid          sql.NullString
-
-		LockBytes []byte
-		Locks     []ActivityLock
-	}
-
-	rows, err := pg.conn.Query(ctx, query)
+	tx, err := pg.Tx(ctx)
 	if err != nil {
-		// TODO: if the query fails with a network error, just back-off and try to reconnect
 		return nil, err
 	}
-	defer rows.Close()
+	defer tx.Rollback(context.WithoutCancel(ctx))
 
-	activities := map[int64]ActivityRow{}
-	processes := map[int64]*BackendProcess{}
+	q := gendb.New(tx)
 
-	for rows.Next() {
-		var row ActivityRow
-		if err := rows.Scan(
-			&row.Pid, &row.State, &row.BlockedByPids, &row.WaitEventType,
-			&row.WaitEvent, &row.Query, &row.BackendType, &row.Database,
-			&row.Username, &row.Application, &row.ClientAddress, &row.ClientHostname,
-			&row.ClientPort, &row.CurrentDatabaseTime, &row.BackendStart, &row.TransactionStart,
-			&row.QueryStart, &row.StateChange, &row.BackendXid, &row.LockBytes); err != nil {
-			return nil, err
-		}
+	activityRows, err := q.GetActivity(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-		if _, ok := activities[row.Pid]; ok {
+	if len(activityRows) == 0 {
+		return nil, nil
+	}
+
+	var pids []pgtype.Uint32
+	activities := map[int32]gendb.GetActivityRow{}
+	processes := map[int32]*BackendProcess{}
+
+	for _, row := range activityRows {
+		if _, ok := activities[row.Pid.Int32]; ok {
 			panic("the same activity was returned multiple times")
 		}
 
-		if err := json.Unmarshal(row.LockBytes, &row.Locks); err != nil {
-			slog.WarnContext(ctx, "JSON unmarshal failed",
-				slog.String("bytes", string(row.LockBytes)),
-				slog.String("err", err.Error()),
-			)
-			return nil, err
-		}
-
-		activities[row.Pid] = row
-		processes[row.Pid] = &BackendProcess{
-			Pid:                 row.Pid,
-			State:               row.State,
+		activities[row.Pid.Int32] = row
+		processes[row.Pid.Int32] = &BackendProcess{
+			Pid:                 int64(row.Pid.Int32),
+			State:               row.State.String,
 			WaitEventType:       row.WaitEventType.String,
 			WaitEvent:           row.WaitEvent.String,
-			BackendType:         row.BackendType,
-			Query:               row.Query,
-			Database:            row.Database,
-			Username:            row.Username.String,
-			Application:         row.Application,
-			ClientAddress:       row.ClientAddress,
+			BackendType:         row.BackendType.String,
+			Query:               row.Query.String,
+			Database:            row.Datname.String,
+			Username:            row.Usename.String,
+			Application:         row.ApplicationName.String,
+			ClientAddress:       unref(row.ClientAddr),
 			ClientHostname:      row.ClientHostname.String,
-			ClientPort:          row.ClientPort,
-			CurrentDatabaseTime: row.CurrentDatabaseTime,
-			BackendStart:        row.BackendStart,
-			TransactionStart:    row.TransactionStart,
-			QueryStart:          row.QueryStart,
-			StateChange:         row.StateChange,
-			BackendXid:          row.BackendXid.String,
+			ClientPort:          int(row.ClientPort.Int32),
+			CurrentDatabaseTime: row.CurrentTimestamp.Time,
+			BackendStart:        row.BackendStart.Time,
+			TransactionStart:    row.XactStart.Time,
+			QueryStart:          row.QueryStart.Time,
+			StateChange:         row.StateChange.Time,
+			BackendXid:          row.BackendXid.Uint32,
 		}
+		pids = append(pids, pgtype.Uint32{Uint32: uint32(row.Pid.Int32), Valid: true})
+	}
+
+	lockRows, err := q.GetLocksForPids(ctx, pids)
+	if err != nil {
+		return nil, err
 	}
 
 	for pid, process := range processes {
 		activity := activities[pid]
-		for _, blockerPid := range activity.BlockedByPids {
+		for _, blockerPid := range activity.BlockedBy {
 			process.BlockedBy = append(process.BlockedBy, processes[blockerPid])
 		}
 
-		for _, lock := range activity.Locks {
+		for _, lock := range lockRows {
+			if lock.Pid.Int32 != pid {
+				continue
+			}
 			pLock := BackendProcessLocks{
-				Type:      lock.Lock.Type,
-				Granted:   lock.Lock.Granted,
-				Mode:      lock.Lock.Mode,
-				WaitStart: lock.Lock.WaitStart,
+				Type:      lock.Locktype.String,
+				Granted:   lock.Granted.Bool,
+				Mode:      lock.Mode.String,
+				WaitStart: lock.Waitstart.Time,
 
-				RelationOid:        unref(lock.Lock.RelationOid),
-				RelationName:       lock.Rel.Name,
-				RelationKind:       lock.Rel.Kind,
-				Page:               lock.Lock.Page,
-				Tuple:              lock.Lock.Tuple,
-				VirtualXid:         unref(lock.Lock.VirtualXid),
-				TransactionId:      unref(lock.Lock.TransactionId),
-				ClassId:            unref(lock.Lock.ClassId),
-				ObjId:              unref(lock.Lock.ObjId),
-				ObjSubId:           lock.Lock.ObjSubId,
-				VirtualTransaction: unref(lock.Lock.VirtualTransaction),
+				RelationOid:        lock.Relation.Uint32,
+				RelationName:       lock.Relname.String,
+				RelationKind:       lock.Relkind,
+				Page:               ref(lock.Page.Valid, lock.Page.Int32),
+				Tuple:              ref(lock.Tuple.Valid, lock.Tuple.Int16),
+				VirtualXid:         lock.Virtualxid.String,
+				TransactionId:      lock.Transactionid.Uint32,
+				ClassId:            lock.Classid.Uint32,
+				ObjId:              ref(lock.Objid.Valid, lock.Objid.Uint32),
+				ObjSubId:           ref(lock.Objsubid.Valid, lock.Objsubid.Int16),
+				VirtualTransaction: lock.Virtualtransaction.String,
 			}
 
 			process.Locks = append(process.Locks, pLock)
@@ -225,6 +114,10 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 		res = append(res, *process)
 	}
 
+	slices.SortFunc(res, func(a, b BackendProcess) int {
+		return a.StateChange.Compare(b.StateChange)
+	})
+
 	return res, nil
 }
 
@@ -234,5 +127,13 @@ func unref[T any](ptr *T) T {
 		return zero
 	} else {
 		return *ptr
+	}
+}
+
+func ref[T any](valid bool, t T) *T {
+	if valid {
+		return &t
+	} else {
+		return nil
 	}
 }
