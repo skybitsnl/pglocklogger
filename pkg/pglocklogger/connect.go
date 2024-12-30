@@ -16,6 +16,8 @@ type PgLockLogger struct {
 type PgLockLoggerOptions struct {
 	DSN      string
 	Interval time.Duration
+	// Minimum time a process must be "active" before being reported.
+	MinActiveDuration time.Duration
 }
 
 // Create a new PgLockLogger.

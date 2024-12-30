@@ -84,11 +84,16 @@ func (bp BackendProcess) IsBlocked() bool {
 	return bp.WaitEventType == "Lock"
 }
 
+// Returns the duration this process has been in the current state.
+func (bp BackendProcess) StateDuration() time.Duration {
+	return bp.CurrentDatabaseTime.Sub(bp.StateChange)
+}
+
 func (p BackendProcess) String() string {
 	sb := &strings.Builder{}
 	fmt.Fprintf(sb, "Process %d (%s %q) is %s for %s (%s:%s)\n",
 		p.Pid, p.BackendType, p.Application, p.State,
-		p.CurrentDatabaseTime.Sub(p.StateChange),
+		p.StateDuration(),
 		p.WaitEventType, p.WaitEvent)
 	if p.Query == "" {
 		fmt.Fprintf(sb, "  (no query)\n")

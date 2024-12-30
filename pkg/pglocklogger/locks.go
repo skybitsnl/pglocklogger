@@ -109,6 +109,10 @@ func (pg *PgLockLogger) GetBlockedProcesses(ctx context.Context) ([]BackendProce
 			continue
 		}
 
+		if process.StateDuration() < pg.options.MinActiveDuration {
+			continue
+		}
+
 		res = append(res, *process)
 	}
 
