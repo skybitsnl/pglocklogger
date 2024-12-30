@@ -1,8 +1,8 @@
 # pglocklogger
 
 *If you're here because your application is broken right now and you suspect
-PostgreSQL locks may be the problem, see the "Emergency" section at the bottom
-of this document.*
+PostgreSQL locks may be the problem, see the ["Emergency" section](#emergency)
+at the bottom of this document.*
 
 Perhaps you've had locking issues recently and you're investigating how to solve
 or prevent those issues in the future. If so, you've come to the right place!
