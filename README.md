@@ -17,6 +17,19 @@ tool prints live information about the blocked transaction, the transaction
 it is blocked on, the rest of the wait queue, and what all those transactions
 are trying to do.
 
+## Why not just use PostgreSQL's own logging of locks / slow queries?
+
+I've run into outages in the past where I couldn't figure out what's going on
+from PostgreSQL's logs alone. For example, it does log PIDs that queries are
+blocked on, but not which lock is the culprit exactly. Also, I've had those
+PIDs not show up in the slowlog themselves, making it hard to understand the
+problem.
+
+The goal of observability is to understand the internal state of a system from
+its external outputs, and it is achieved when issues can be accurately
+understood from the observability metrics. pglocklogger is intended as one
+additional tool in your toolkit.
+
 ## Quick start
 
 There's various easy ways to run the tool:
