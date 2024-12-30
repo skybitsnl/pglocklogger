@@ -51,6 +51,28 @@ $ ./pglocklogger -dsn ...
           holding virtualxid/ExclusiveLock lock on /
 ```
 
+## FAQ
+
+### What is "lock on unknown OID"?
+
+The PostgreSQL `pg_catalog.pg_locks` table contains locks on the entire cluster,
+not just the current database. Those locks are on objects, identified by their
+OIDs. We then look up those OIDs in the `pg_catalog.pg_class` table, but this
+table only contains relations in the current database (which is selected by the
+DSN you passed to pglocklogger).
+
+If you only see "unknown OID" occasionally, they refer to either objects in
+other databases, or objects not yet committed by the transaction - since in
+PostgreSQL, DDL statements also run inside transactions and only become visible
+when the transaction is committed.
+
+If you see "unknown OID" a lot, or exclusively, then check which database the
+objects exist in, and ensure that same database is also in the DSN you pass to
+pglocklogger.
+
+In the future, pglocklogger may be able to find OIDs in multiple databases, by
+switching between them dynamically. Patches towards this are welcome!
+
 ## Advice for migrations & further reading
 
 When you perform 'zero-downtime' schema migrations, and you run into locking
