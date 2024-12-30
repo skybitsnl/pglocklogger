@@ -88,6 +88,17 @@ and I would suggest them for further reading:
 - [Postgres Log Monitoring 101: Deadlocks, Checkpoint Tuning & Blocked Queries](https://pganalyze.com/blog/postgresql-log-monitoring-101-deadlocks-checkpoints-blocked-queries)
 - [Lock Monitoring (Postgres Wiki)](https://wiki.postgresql.org/wiki/Lock_Monitoring)
 - [Chapter 27. Monitoring Database Activity](https://www.postgresql.org/docs/current/monitoring.html)
+- [Unlocking the Postgres Lock Manager (pdf, slideshow](https://momjian.us/main/writings/pgsql/locking.pdf)
+
+## TODO
+
+I'd like to add:
+- end to end tests against multiple PostgreSQL versions
+  - various lock modes
+  - table-level, row-level, advisory locks
+  - implicit and explicit locks
+  - blocks on system activity, e.g. autovacuum
+- JSON export, plus some kind of visualization/analysis tool over time
 
 ## Emergency
 
