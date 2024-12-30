@@ -19,16 +19,18 @@ are trying to do.
 
 ## Quick start
 
-There's three easy ways to run the tool:
+There's various easy ways to run the tool:
 
-1. Use the Docker image using
-   `docker run sjorsgielen/pglocklogger:latest -dsn ...`. Or, build it yourself
-   using `goreleaser release --snapshot --clean`.
-2. Run the tool directly from the repo using `go run ./cmd -dsn ...` (requires
-   a Go toolchain)
-3. Build the tool using `go build -o pglocklogger ./cmd` (requires a Go
-   toolchain, you can also build for other architectures), then run it at your
-   target location using `./pglocklogger -dsn ...`
+1. Use the Docker image: `docker run sjorsgielen/pglocklogger:latest -dsn ...`.
+   Or, build it yourself from this repo using
+   `goreleaser release --snapshot --clean`.
+2. If you have a Go toolchain, use `go run`:
+   `go run -v github.com/skybitsnl/pglocklogger/cmd@latest -dsn ...`. Or, if you
+   have a `git clone` of the repo, use `go run ./cmd -dsn ...`
+3. Build the tool using `go build -o pglocklogger ./cmd` on a machine where you
+   have the Go toolchain installed. You can also build for other architectures
+   using GOOS and GOARCH.  The resulting binary also runs on systems without Go,
+   using `./pglocklogger -dsn ...`.
 
 Example output:
 
